@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: garimpo
+    name: auvello-ofertas
     runtime: docker
     plan: free
     autoDeployTrigger: commit
