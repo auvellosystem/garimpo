@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 
 type Offer = { id: string; marketplace: "Mercado Livre" | "Shopee"; title: string; price: number; originalPrice?: number; image?: string; url: string; shipping?: string; seller?: string; rating?: number; sold?: number };
 type SourceSummary = { status: string; count: number };
-type SearchResponse = { query: string; offers: Offer[]; sources: { mercadoLivre: SourceSummary; shopee: SourceSummary } };
+type SearchResponse = { query: string; filters?: { minPrice?: number; maxPrice?: number }; offers: Offer[]; sources: { mercadoLivre: SourceSummary; shopee: SourceSummary } };
 type MarketplaceFilter = "all" | "Mercado Livre" | "Shopee";
 type WhatsAppMarketplace = "all" | "Mercado Livre" | "Shopee";
 type WhatsAppStep = "ask" | "marketplace" | "phone" | "sent";
@@ -19,6 +19,8 @@ const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL
 
 export default function Home() {
   const [query, setQuery] = useState("");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -31,9 +33,14 @@ export default function Home() {
   const [whatsappError, setWhatsappError] = useState("");
   const [whatsappSent, setWhatsappSent] = useState(false);
 
-  const runSearch = useCallback(async (product: string) => {
+  const runSearch = useCallback(async (product: string, override?: { minPrice?: number; maxPrice?: number }) => {
     const cleanedProduct = product.trim();
     if (cleanedProduct.length < 2) throw new Error("Digite o nome do produto que você quer encontrar.");
+    const parsedMin = override?.minPrice ?? (minPrice.trim() ? Number(minPrice.replace(",", ".")) : undefined);
+    const parsedMax = override?.maxPrice ?? (maxPrice.trim() ? Number(maxPrice.replace(",", ".")) : undefined);
+    if (parsedMin !== undefined && (!Number.isFinite(parsedMin) || parsedMin < 0)) throw new Error("Informe um preço mínimo válido.");
+    if (parsedMax !== undefined && (!Number.isFinite(parsedMax) || parsedMax <= 0)) throw new Error("Informe um preço máximo válido.");
+    if (parsedMin !== undefined && parsedMax !== undefined && parsedMin > parsedMax) throw new Error("O preço mínimo não pode ser maior que o preço máximo.");
     setLoading(true);
     setError("");
     setData(null);
@@ -43,7 +50,7 @@ export default function Home() {
       const response = await fetch("/api/search", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query: cleanedProduct }),
+        body: JSON.stringify({ query: cleanedProduct, minPrice: parsedMin, maxPrice: parsedMax }),
       });
       const body = (await response.json()) as SearchResponse & { error?: string };
       if (!response.ok) throw new Error(body.error || "Não foi possível consultar as ofertas.");
@@ -58,7 +65,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [minPrice, maxPrice]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,7 +86,13 @@ export default function Home() {
       const response = await fetch("/api/whatsapp", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query: data.query, phone: cleanedPhone, marketplace: whatsappMarketplace }),
+        body: JSON.stringify({
+          query: data.query,
+          phone: cleanedPhone,
+          marketplace: whatsappMarketplace,
+          minPrice: data.filters?.minPrice,
+          maxPrice: data.filters?.maxPrice,
+        }),
       });
       const body = await response.json() as { sent?: boolean; error?: string };
       if (!response.ok || !body.sent) throw new Error(body.error || "Não foi possível enviar as ofertas.");
@@ -100,12 +113,16 @@ export default function Home() {
       name: "search_offers",
       title: "Buscar ofertas",
       description: "Pesquisa ofertas no Mercado Livre e na Shopee e atualiza a página.",
-      inputSchema: { type: "object", properties: { query: { type: "string", minLength: 2, description: "Produto procurado" } }, required: ["query"], additionalProperties: false },
+      inputSchema: { type: "object", properties: { query: { type: "string", minLength: 2, description: "Produto procurado" }, minPrice: { type: "number", minimum: 0, description: "Preço mínimo opcional" }, maxPrice: { type: "number", exclusiveMinimum: 0, description: "Preço máximo opcional" } }, required: ["query"], additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: async (input: { query?: unknown }) => {
+      execute: async (input: { query?: unknown; minPrice?: unknown; maxPrice?: unknown }) => {
         if (typeof input?.query !== "string") throw new Error("query deve ser um texto");
         setQuery(input.query);
-        return runSearch(input.query);
+        const toolMin = typeof input.minPrice === "number" ? input.minPrice : undefined;
+        const toolMax = typeof input.maxPrice === "number" ? input.maxPrice : undefined;
+        if (toolMin !== undefined) setMinPrice(String(toolMin));
+        if (toolMax !== undefined) setMaxPrice(String(toolMax));
+        return runSearch(input.query, { minPrice: toolMin, maxPrice: toolMax });
       },
     }, { signal: lifecycle.signal })).catch(() => undefined);
     return () => lifecycle.abort();
@@ -148,6 +165,10 @@ export default function Home() {
         <form onSubmit={onSubmit} className="search-panel rounded-[28px] border border-white/10 bg-white p-5 text-slate-950 shadow-2xl sm:p-7">
           <label htmlFor="product" className="mb-2 block text-sm font-semibold text-slate-800">O que você quer comprar?</label>
           <div className="relative"><Search className="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-slate-400" size={20}/><Input id="product" value={query} onChange={event => setQuery(event.target.value)} placeholder="Ex.: PlayStation 5 Slim" autoComplete="off" className="h-14 rounded-2xl border-slate-200 bg-slate-50 pl-12 pr-4 text-base shadow-none transition focus-visible:border-cyan-500 focus-visible:bg-white focus-visible:ring-4 focus-visible:ring-cyan-500/10"/></div>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div><label htmlFor="min-price" className="mb-1.5 block text-xs font-semibold text-slate-600">Preço mínimo</label><Input id="min-price" type="number" inputMode="decimal" min="0" step="0.01" value={minPrice} onChange={event => setMinPrice(event.target.value)} placeholder="R$ 0" className="h-12 rounded-xl border-slate-200 bg-slate-50 px-3 shadow-none focus-visible:border-cyan-500 focus-visible:bg-white focus-visible:ring-4 focus-visible:ring-cyan-500/10"/></div>
+            <div><label htmlFor="max-price" className="mb-1.5 block text-xs font-semibold text-slate-600">Preço máximo</label><Input id="max-price" type="number" inputMode="decimal" min="0.01" step="0.01" value={maxPrice} onChange={event => setMaxPrice(event.target.value)} placeholder="Sem limite" className="h-12 rounded-xl border-slate-200 bg-slate-50 px-3 shadow-none focus-visible:border-cyan-500 focus-visible:bg-white focus-visible:ring-4 focus-visible:ring-cyan-500/10"/></div>
+          </div>
           <Button type="submit" disabled={loading} className="mt-5 h-14 w-full rounded-2xl bg-[#0b2039] px-5 text-base font-semibold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-[#123052] disabled:cursor-wait disabled:opacity-70">{loading?<LoaderCircle className="animate-spin" size={20}/>:<Search size={19}/>} {loading?"Buscando ofertas...":"Buscar ofertas"}</Button>
           {error&&<p role="alert" className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
         </form>
@@ -158,7 +179,7 @@ export default function Home() {
       {!data&&!loading&&<div className="grid gap-4 md:grid-cols-3">{[["01","Informe o produto","Pesquise por marca, modelo ou característica."],["02","Compare as lojas","Os resultados são reunidos e ordenados em uma única tela."],["03","Receba no WhatsApp","Depois da busca, escolha se deseja receber a seleção no seu número."]].map(([n,t,c])=><div key={n} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_10px_40px_rgba(15,23,42,.05)]"><p className="font-mono text-sm font-bold text-cyan-600">{n}</p><h2 className="mt-8 text-lg font-semibold tracking-tight text-slate-900">{t}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{c}</p></div>)}</div>}
       {loading&&<div className="grid place-items-center rounded-3xl border border-slate-200 bg-white py-20 text-center"><LoaderCircle className="animate-spin text-cyan-600" size={32}/><p className="mt-4 font-semibold text-slate-800">Comparando preços nas duas lojas...</p></div>}
       {data&&<div>
-        <div className="mb-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-cyan-700">{displayedOffers.length} {marketplaceFilter === "all" ? "ofertas selecionadas" : `ofertas da ${marketplaceFilter}`}</p><h2 className="mt-1 text-3xl font-semibold tracking-[-.035em] text-slate-950">Melhores opções para “{data.query}”</h2></div>{whatsappSent&&<div className="flex items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700"><CheckCircle2 size={17}/>Enviado no WhatsApp</div>}</div>
+        <div className="mb-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-cyan-700">{displayedOffers.length} {marketplaceFilter === "all" ? "ofertas selecionadas" : `ofertas da ${marketplaceFilter}`}</p><h2 className="mt-1 text-3xl font-semibold tracking-[-.035em] text-slate-950">Melhores opções para “{data.query}”</h2>{(data.filters?.minPrice !== undefined || data.filters?.maxPrice !== undefined)&&<p className="mt-2 text-sm text-slate-500">Faixa aplicada: {data.filters?.minPrice !== undefined ? money.format(data.filters.minPrice) : money.format(0)} até {data.filters?.maxPrice !== undefined ? money.format(data.filters.maxPrice) : "sem limite"}</p>}</div>{whatsappSent&&<div className="flex items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700"><CheckCircle2 size={17}/>Enviado no WhatsApp</div>}</div>
         <div className="mb-7 grid gap-3 sm:grid-cols-2" aria-label="Resultados por loja">
           <button type="button" aria-pressed={marketplaceFilter === "Mercado Livre"} onClick={() => toggleMarketplace("Mercado Livre")} className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${marketplaceFilter === "Mercado Livre" ? "border-yellow-500 bg-yellow-300 shadow-[0_8px_24px_rgba(234,179,8,.2)] ring-2 ring-yellow-400/40" : "border-yellow-200 bg-white hover:bg-yellow-50"}`}><div><p className="text-sm font-bold text-yellow-900">Mercado Livre</p>{data.sources.mercadoLivre.status!=="ok"&&<p className="mt-0.5 text-xs text-yellow-800">{data.sources.mercadoLivre.status}</p>}</div><p className="text-sm font-semibold text-yellow-950"><span className="text-xl font-bold">{data.sources.mercadoLivre.count}</span> {data.sources.mercadoLivre.count===1?"resultado":"resultados"}</p></button>
           <button type="button" aria-pressed={marketplaceFilter === "Shopee"} onClick={() => toggleMarketplace("Shopee")} className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${marketplaceFilter === "Shopee" ? "border-orange-500 bg-orange-300 shadow-[0_8px_24px_rgba(249,115,22,.2)] ring-2 ring-orange-400/40" : "border-orange-200 bg-white hover:bg-orange-50"}`}><div><p className="text-sm font-bold text-orange-900">Shopee</p>{data.sources.shopee.status!=="ok"&&<p className="mt-0.5 text-xs text-orange-800">{data.sources.shopee.status}</p>}</div><p className="text-sm font-semibold text-orange-950"><span className="text-xl font-bold">{data.sources.shopee.count}</span> {data.sources.shopee.count===1?"resultado":"resultados"}</p></button>

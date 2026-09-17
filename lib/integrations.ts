@@ -16,6 +16,7 @@ let amazonTokenCache: { accessToken: string; expiresAt: number } | undefined;
 
 export type ProviderResult = { offers: Offer[]; status: string };
 export type ReferenceResult = ProviderResult & { query?: string };
+export type SearchOptions = { minPrice?: number; maxPrice?: number };
 
 function asNumber(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(String(value ?? "").replace(",", "."));
@@ -24,10 +25,15 @@ function asNumber(value: unknown): number {
 
 const SEARCH_CONNECTORS = new Set(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para", "por", "com"]);
 const ACCESSORY_TERMS = [
-  "adaptador", "adesivo", "analogico", "antipoeira", "base", "bolsa", "borracha", "cabo", "capa", "case",
-  "carregador", "controle", "controller", "cooler", "dock", "faceplate", "fone", "grip", "headset", "jogo",
-  "joystick", "kit reparo", "mesa dock", "organizador", "pelicula", "placa", "protetor", "protetora", "skin",
-  "stand", "suporte", "tampa", "tampas", "thumbstick", "ventilador",
+  "adaptador", "adesivo", "analogico", "antipoeira", "base", "bases", "bolsa", "borracha", "cabo", "cabos",
+  "capa", "capas", "case", "cases", "carregador", "carregadores", "controle", "controles", "controller",
+  "cooler", "dock", "faceplate", "fone", "grip", "headset", "jogo", "jogos", "joystick", "kit reparo",
+  "mesa dock", "organizador", "pelicula", "peliculas", "protetor", "protetora", "skin", "stand", "suporte",
+  "suportes", "tampa", "tampas", "thumbstick", "ventilador",
+];
+const PRIMARY_PRODUCT_TERMS = [
+  "console", "videogame", "smartphone", "celular", "notebook", "laptop", "televisao", "tv", "monitor",
+  "camera", "impressora", "geladeira", "fogao", "lavadora", "microondas", "air fryer", "aspirador",
 ];
 
 function normalizeSearchText(value: string): string {
@@ -49,6 +55,34 @@ function meaningfulTerms(value: string): string[] {
 function queryRequestsAccessory(query: string): boolean {
   const normalized = ` ${normalizeSearchText(query)} `;
   return ACCESSORY_TERMS.some((term) => normalized.includes(` ${term} `));
+}
+
+function titleLooksLikeAccessory(title: string, query: string): boolean {
+  if (queryRequestsAccessory(query)) return false;
+  const normalized = normalizeSearchText(title);
+  const normalizedQuery = normalizeSearchText(query);
+  const intent = consoleIntent(query);
+  const targetsPrimaryProduct = Boolean(intent) || /\b(iphone|galaxy|smartphone|celular|macbook|ipad|tablet|notebook|laptop|televisao|tv|monitor|camera|impressora|geladeira|fogao|lavadora|microondas|air fryer|aspirador|playstation|xbox|nintendo)\b/.test(normalizedQuery);
+  if (!targetsPrimaryProduct) return false;
+  const padded = ` ${normalized} `;
+  const found = ACCESSORY_TERMS
+    .map((term) => ({ term, index: padded.indexOf(` ${term} `) }))
+    .filter((entry) => entry.index >= 0);
+  if (!found.length) return false;
+
+  const firstAccessoryIndex = Math.min(...found.map((entry) => entry.index));
+  const firstModelIndex = intent
+    ? Math.min(...intent.aliases.map((alias) => normalized.indexOf(alias)).filter((index) => index >= 0), Number.POSITIVE_INFINITY)
+    : Math.min(...meaningfulTerms(query).map((term) => normalized.indexOf(term)).filter((index) => index >= 0), Number.POSITIVE_INFINITY);
+  const startsAsAccessory = found.some(({ term }) => normalized === term || normalized.startsWith(`${term} `));
+  const accessoryBeforeProduct = firstAccessoryIndex < firstModelIndex;
+  const describedAsCompatible = /\b(para|compativel|compatibilidade|serve)\b/.test(normalized);
+  const hasPrimarySignal = PRIMARY_PRODUCT_TERMS.some((term) => padded.includes(` ${term} `));
+  const hasStrongIntentProductSignal = Boolean(intent)
+    && firstModelIndex < firstAccessoryIndex
+    && /\b(slim|fat|digital|standard|disc|com leitor|sem leitor|825gb|825 gb|1tb|1 tb|edicao|bundle|sony|microsoft|nintendo)\b/.test(normalized);
+
+  return startsAsAccessory || accessoryBeforeProduct || describedAsCompatible || (!hasPrimarySignal && !hasStrongIntentProductSignal);
 }
 
 function consoleIntent(query: string): { aliases: string[]; variants: string[] } | undefined {
@@ -80,10 +114,18 @@ function matchesSearchIntent(title: string, query: string): boolean {
   if (intent && !accessoryRequested) {
     const modelMatches = intent.aliases.some((alias) => normalizedTitle.includes(alias));
     if (!modelMatches) return false;
-    const hasAccessoryTerm = ACCESSORY_TERMS.some((term) => ` ${normalizedTitle} `.includes(` ${term} `));
     const hasClearConsoleSignal = /\b(console|slim|fat|digital|standard|disc|midia fisica|com leitor|sem leitor|cfi|825gb|825 gb|1tb|1 tb|edicao|bundle|sony|microsoft|nintendo)\b/.test(normalizedTitle);
-    if (hasAccessoryTerm) return false;
+    if (titleLooksLikeAccessory(title, query)) return false;
     return hasClearConsoleSignal;
+  }
+
+  if (intent && accessoryRequested) {
+    const normalizedQuery = ` ${normalizeSearchText(query)} `;
+    const paddedTitle = ` ${normalizedTitle} `;
+    const requestedAccessories = ACCESSORY_TERMS.filter((term) => normalizedQuery.includes(` ${term} `));
+    const modelMatches = intent.aliases.some((alias) => normalizedTitle.includes(alias));
+    const accessoryMatches = requestedAccessories.some((term) => paddedTitle.includes(` ${term} `));
+    return modelMatches && accessoryMatches;
   }
 
   const terms = meaningfulTerms(query);
@@ -92,9 +134,7 @@ function matchesSearchIntent(title: string, query: string): boolean {
   if (matched / terms.length < .7) return false;
 
   if (!accessoryRequested) {
-    const hasAccessoryTerm = ACCESSORY_TERMS.some((term) => ` ${normalizedTitle} `.includes(` ${term} `));
-    const hasProductSignal = /\b(console|celular|smartphone|notebook|televisao|tv|monitor|camera|impressora|geladeira|fogao|lavadora)\b/.test(normalizedTitle);
-    if (hasAccessoryTerm && !hasProductSignal) return false;
+    if (titleLooksLikeAccessory(title, query)) return false;
   }
   return true;
 }
@@ -105,24 +145,52 @@ function searchRelevanceScore(title: string, query: string): number {
   const normalizedQuery = normalizeSearchText(query);
   const terms = meaningfulTerms(query);
   const matched = terms.filter((term) => normalizedTitle.includes(term)).length;
-  return (normalizedTitle.includes(normalizedQuery) ? 10 : 0) + matched * 2 + (consoleIntent(query) ? 5 : 0);
+  const coverage = terms.length ? matched / terms.length : 0;
+  const intent = consoleIntent(query);
+  const exactPhrase = normalizedTitle.includes(normalizedQuery) ? 30 : 0;
+  const startsWithQuery = normalizedTitle.startsWith(normalizedQuery) ? 10 : 0;
+  const allTerms = coverage === 1 ? 18 : 0;
+  const modelMatch = intent?.aliases.some((alias) => normalizedTitle.includes(alias)) ? 24 : 0;
+  const productSignal = PRIMARY_PRODUCT_TERMS.some((term) => ` ${normalizedTitle} `.includes(` ${term} `)) ? 6 : 0;
+  return exactPhrase + startsWithQuery + allTerms + coverage * 30 + modelMatch + productSignal;
 }
 
 function relevantOffers(offers: Offer[], query: string): Offer[] {
   return offers.filter((offer) => matchesSearchIntent(offer.title, query));
 }
 
-function pickBest(offers: Offer[], limit = 5): Offer[] {
-  return offers
-    .filter((offer) => offer.price > 0 && offer.url && offer.title)
-    .sort((a, b) => {
-      const aDiscount = a.originalPrice && a.originalPrice > a.price ? (a.originalPrice - a.price) / a.originalPrice : 0;
-      const bDiscount = b.originalPrice && b.originalPrice > b.price ? (b.originalPrice - b.price) / b.originalPrice : 0;
-      const aScore = a.price * (1 - Math.min(aDiscount, .55) * .18);
-      const bScore = b.price * (1 - Math.min(bDiscount, .55) * .18);
-      return aScore - bScore;
+function validPriceRange(options: SearchOptions): SearchOptions {
+  const minPrice = Number.isFinite(options.minPrice) && Number(options.minPrice) >= 0 ? Number(options.minPrice) : undefined;
+  const maxPrice = Number.isFinite(options.maxPrice) && Number(options.maxPrice) > 0 ? Number(options.maxPrice) : undefined;
+  return { minPrice, maxPrice };
+}
+
+export function sortOffersForQuery(offers: Offer[], query: string, options: SearchOptions = {}, limit = 20): Offer[] {
+  const range = validPriceRange(options);
+  const candidates = relevantOffers(offers, query).filter((offer) =>
+    offer.price > 0
+    && Boolean(offer.url && offer.title)
+    && (range.minPrice === undefined || offer.price >= range.minPrice)
+    && (range.maxPrice === undefined || offer.price <= range.maxPrice),
+  );
+  const prices = candidates.map((offer) => offer.price).sort((a, b) => a - b);
+  const median = prices.length ? prices[Math.floor(prices.length / 2)] : 0;
+  const strictProduct = Boolean(consoleIntent(query) && !queryRequestsAccessory(query));
+
+  return candidates
+    .map((offer) => {
+      let score = searchRelevanceScore(offer.title, query);
+      if (offer.rating) score += Math.min(5, offer.rating);
+      if (offer.sold) score += Math.min(7, Math.log10(offer.sold + 1) * 2);
+      if (offer.shipping) score += 2;
+      if (offer.originalPrice && offer.originalPrice > offer.price) score += Math.min(3, ((offer.originalPrice - offer.price) / offer.originalPrice) * 6);
+      if (strictProduct && median > 0 && offer.price < median * .28) score -= 45;
+      return { offer, score };
     })
-    .slice(0, limit);
+    .filter(({ score }) => score >= 0)
+    .sort((a, b) => b.score - a.score || a.offer.price - b.offer.price)
+    .slice(0, limit)
+    .map(({ offer }) => offer);
 }
 
 function mercadoLivreQueryVariants(query: string): string[] {
@@ -186,7 +254,7 @@ async function applyMercadoLivreAffiliateLinks(offers: Offer[]): Promise<{ offer
   }
 }
 
-export async function searchMercadoLivre(query: string): Promise<ProviderResult> {
+export async function searchMercadoLivre(query: string, options: SearchOptions = {}): Promise<ProviderResult> {
   try {
     const token = await mercadoLivreAccessToken();
     if (!token) return { offers: [], status: "OAuth não autorizado — execute npm run ml:auth" };
@@ -227,8 +295,11 @@ export async function searchMercadoLivre(query: string): Promise<ProviderResult>
     const resolved = await Promise.all(productIds.map((productId) =>
       resolveMercadoLivreProduct(productId, token, undefined, query),
     ));
-    const offers = pickBest(relevantOffers(resolved.flatMap((result) => result.offers), query), 10);
-    if (!offers.length) return { offers: [], status: "nenhum anúncio ativo" };
+    const offers = sortOffersForQuery(resolved.flatMap((result) => result.offers), query, options, 10);
+    if (!offers.length) {
+      const filteredByPrice = options.minPrice !== undefined || options.maxPrice !== undefined;
+      return { offers: [], status: filteredByPrice ? "nenhuma oferta na faixa de preço" : "nenhum anúncio ativo" };
+    }
     return applyMercadoLivreAffiliateLinks(offers);
   } catch { return { offers: [], status: "não respondeu" }; }
 }
@@ -326,7 +397,7 @@ async function resolveMercadoLivreProduct(
       });
     }
     if (seedOffer && !offers.some((offer) => offer.id === seedOffer?.id)) offers.unshift(seedOffer);
-    return { offers: pickBest(offers, 10), status: offers.length ? "ok" : "nenhum anúncio ativo", query };
+    return { offers: sortOffersForQuery(offers, initialQuery || query, {}, 20), status: offers.length ? "ok" : "nenhum anúncio ativo", query };
   } catch {
     return { offers: [], status: "não respondeu" };
   }
@@ -345,7 +416,7 @@ function shopeeQueryVariants(query: string): string[] {
   return [...new Set(variants)].slice(0, 3);
 }
 
-export async function searchShopee(query: string): Promise<ProviderResult> {
+export async function searchShopee(query: string, options: SearchOptions = {}): Promise<ProviderResult> {
   const appId = process.env.SHOPEE_APP_ID?.trim();
   const secret = process.env.SHOPEE_SECRET?.trim();
   if (!appId || !secret) return { offers: [], status: "aguardando credenciais" };
@@ -397,10 +468,14 @@ export async function searchShopee(query: string): Promise<ProviderResult> {
         sold: asNumber(item.sales) || undefined,
       };
     });
-    const relevant = relevantOffers(offers, query);
+    const relevant = sortOffersForQuery(offers, query, options, 10);
     return {
-      offers: pickBest(relevant, 10),
-      status: relevant.length ? "ok" : "nenhum produto principal encontrado",
+      offers: relevant,
+      status: relevant.length
+        ? "ok"
+        : options.minPrice !== undefined || options.maxPrice !== undefined
+          ? "nenhuma oferta na faixa de preço"
+          : "nenhum produto principal encontrado",
     };
   } catch { return { offers: [], status: "não respondeu" }; }
 }
@@ -524,7 +599,7 @@ export async function searchAmazon(query: string): Promise<ProviderResult> {
       };
     }).filter((offer: Offer | undefined): offer is Offer => Boolean(offer));
 
-    return { offers: pickBest(offers, 10), status: offers.length ? "ok" : "nenhuma oferta com preço" };
+    return { offers: sortOffersForQuery(offers, query, {}, 10), status: offers.length ? "ok" : "nenhuma oferta com preço" };
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "não respondeu";
     return { offers: [], status: message.startsWith("autorização") ? message : "não respondeu" };
