@@ -196,12 +196,16 @@ async function resolveMercadoLivreProduct(
           .filter((entry) => entry.code === 200 && entry.body)
           .map((entry): Offer => {
             const item = entry.body ?? {};
+            const shippingLabels = [
+              item.shipping?.free_shipping === true ? "Frete grátis" : "",
+              item.shipping?.logistic_type === "fulfillment" ? "Envio Full" : "",
+            ].filter(Boolean);
             return {
               id: String(item.id ?? ""), marketplace: "Mercado Livre", title: String(item.title || query),
               price: asNumber(item.price), originalPrice: asNumber(item.original_price) || undefined,
               image: String(item.thumbnail || productImage).replace(/^http:/, "https:"),
               url: String(item.permalink || mercadoLivreItemUrl(String(item.id ?? ""))),
-              shipping: item.shipping?.free_shipping ? "Frete grátis" : undefined,
+              shipping: shippingLabels.length ? shippingLabels.join(" • ") : undefined,
               sold: asNumber(item.sold_quantity) || undefined,
             };
           });

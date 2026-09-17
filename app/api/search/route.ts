@@ -1,4 +1,4 @@
-import { searchAmazon, searchMercadoLivre, searchShopee } from "@/lib/integrations";
+import { searchMercadoLivre, searchShopee } from "@/lib/integrations";
 
 export const dynamic = "force-dynamic";
 
@@ -11,15 +11,14 @@ export async function POST(request: Request) {
       return Response.json({ error: "Digite um produto para pesquisar." }, { status: 400 });
     }
 
-    const [mercadoLivre, shopee, amazon] = await Promise.all([
+    const [mercadoLivre, shopee] = await Promise.all([
       searchMercadoLivre(query),
       searchShopee(query),
-      searchAmazon(query),
     ]);
 
-    const offers = [...mercadoLivre.offers, ...shopee.offers, ...amazon.offers]
+    const offers = [...mercadoLivre.offers, ...shopee.offers]
       .sort((a, b) => a.price - b.price)
-      .slice(0, 30);
+      .slice(0, 20);
 
     return Response.json({
       query,
@@ -27,7 +26,6 @@ export async function POST(request: Request) {
       sources: {
         mercadoLivre: { status: mercadoLivre.status, count: mercadoLivre.offers.length },
         shopee: { status: shopee.status, count: shopee.offers.length },
-        amazon: { status: amazon.status, count: amazon.offers.length },
       },
     });
   } catch {
