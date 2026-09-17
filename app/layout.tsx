@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Oferta Direta — Comparador Shopee e Mercado Livre",
-  description: "Encontre ofertas na Shopee e no Mercado Livre e receba a seleção no WhatsApp.",
+  title: "Oferta Direta — Comparador Mercado Livre, Shopee e Amazon",
+  description: "Encontre ofertas no Mercado Livre, na Shopee e na Amazon e receba a seleção no WhatsApp.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

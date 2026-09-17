@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: garimpo
+    runtime: docker
+    plan: free
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: ML_TOKEN_SERVICE_PORT
+        value: 8788
+      - key: MERCADO_LIVRE_TOKEN_SERVICE_URL
+        value: http://127.0.0.1:8788/token
+      - key: DATABASE_URL
+        sync: false
+      - key: ML_CLIENT_ID
+        sync: false
+      - key: ML_CLIENT_SECRET
+        sync: false
+      - key: ML_REDIRECT_URI
+        sync: false
+      - key: SHOPEE_APP_ID
+        sync: false
+      - key: SHOPEE_SECRET
+        sync: false
+      - key: SHOPEE_API_URL
+        value: https://open-api.affiliate.shopee.com.br/graphql
+      - key: AFFILIATE_MODE
+        value: portal
+      - key: AFFILIATE_TAG
+        sync: false
+      - key: AFFILIATE_CREATE_URL
+        value: https://www.mercadolivre.com.br/affiliate-program/api/v2/affiliates/createLink
+      - key: ML_AFFILIATE_COOKIE
+        sync: false
+      - key: ML_AFFILIATE_USER_AGENT
+        value: Mozilla/5.0
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_GRAPH_VERSION
+        value: v23.0

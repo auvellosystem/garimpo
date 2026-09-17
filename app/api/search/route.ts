@@ -1,4 +1,4 @@
-import { buildWhatsAppMessage, searchMercadoLivre, searchMercadoLivreByReference, searchShopee, sendWhatsApp, type ProviderResult } from "@/lib/integrations";
+import { buildWhatsAppMessage, searchAmazon, searchMercadoLivre, searchMercadoLivreByReference, searchShopee, sendWhatsApp, type ProviderResult } from "@/lib/integrations";
 
 export const dynamic = "force-dynamic";
 
@@ -14,22 +14,33 @@ export async function POST(request: Request) {
 
     let mercadoLivre: ProviderResult;
     let shopee: ProviderResult;
+    let amazon: ProviderResult;
     let resolvedQuery = query;
 
     if (mode === "mercado_link") {
       const referenceResult = await searchMercadoLivreByReference(reference);
       mercadoLivre = referenceResult;
       resolvedQuery = referenceResult.query || "Produto do Mercado Livre";
-      shopee = referenceResult.query
-        ? await searchShopee(referenceResult.query)
-        : { offers: [], status: "aguardando identificação do produto" };
+      if (referenceResult.query) {
+        [shopee, amazon] = await Promise.all([
+          searchShopee(referenceResult.query),
+          searchAmazon(referenceResult.query),
+        ]);
+      } else {
+        shopee = { offers: [], status: "aguardando identificação do produto" };
+        amazon = { offers: [], status: "aguardando identificação do produto" };
+      }
     } else {
-      [mercadoLivre, shopee] = await Promise.all([searchMercadoLivre(query), searchShopee(query)]);
+      [mercadoLivre, shopee, amazon] = await Promise.all([
+        searchMercadoLivre(query),
+        searchShopee(query),
+        searchAmazon(query),
+      ]);
     }
 
-    const offers = [...mercadoLivre.offers, ...shopee.offers]
+    const offers = [...mercadoLivre.offers, ...shopee.offers, ...amazon.offers]
       .sort((a, b) => a.price - b.price)
-      .slice(0, 20);
+      .slice(0, 30);
     const message = buildWhatsAppMessage(resolvedQuery, offers);
     const whatsapp = offers.length ? await sendWhatsApp(phone, message) : { sent: false, mode: "none" as const };
 
@@ -40,6 +51,7 @@ export async function POST(request: Request) {
       sources: {
         mercadoLivre: { status: mercadoLivre.status, count: mercadoLivre.offers.length },
         shopee: { status: shopee.status, count: shopee.offers.length },
+        amazon: { status: amazon.status, count: amazon.offers.length },
       },
       whatsapp,
     });

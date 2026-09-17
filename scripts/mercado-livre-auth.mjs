@@ -63,7 +63,9 @@ try {
   const tokens = await exchangeAuthorizationCode(code, verifier);
   console.log("\nMercado Livre autorizado com sucesso.");
   console.log(`Token válido por aproximadamente ${Math.round(Number(tokens.expires_in || 0) / 60)} minutos.`);
-  console.log("A renovação será feita automaticamente enquanto o projeto estiver rodando.\n");
+  console.log(process.env.DATABASE_URL?.trim()
+    ? "Tokens salvos no Neon. O Render poderá renová-los automaticamente.\n"
+    : "A renovação será feita automaticamente enquanto o projeto estiver rodando.\n");
 } finally {
   reader.close();
 }

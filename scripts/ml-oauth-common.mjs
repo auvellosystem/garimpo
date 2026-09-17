@@ -7,6 +7,28 @@ const projectRoot = process.cwd();
 const envPath = resolve(projectRoot, ".env.local");
 const tokenPath = resolve(projectRoot, ".mercado-livre-token.json");
 const tokenEndpoint = "https://api.mercadolibre.com/oauth/token";
+const tokenProvider = "mercado_livre";
+
+let databasePromise;
+
+async function database() {
+  const connectionString = process.env.DATABASE_URL?.trim();
+  if (!connectionString) return null;
+  if (!databasePromise) {
+    databasePromise = import("@neondatabase/serverless").then(async ({ neon }) => {
+      const sql = neon(connectionString);
+      await sql`
+        CREATE TABLE IF NOT EXISTS app_oauth_tokens (
+          provider TEXT PRIMARY KEY,
+          token_data JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      return sql;
+    });
+  }
+  return databasePromise;
+}
 
 function parseEnvLine(line) {
   const trimmed = line.trim();
@@ -56,6 +78,16 @@ export function createState() {
 }
 
 export async function loadTokens() {
+  const sql = await database();
+  if (sql) {
+    const rows = await sql`
+      SELECT token_data
+      FROM app_oauth_tokens
+      WHERE provider = ${tokenProvider}
+      LIMIT 1
+    `;
+    return rows[0]?.token_data ?? null;
+  }
   if (!existsSync(tokenPath)) return null;
   try {
     return JSON.parse(await readFile(tokenPath, "utf8"));
@@ -65,10 +97,22 @@ export async function loadTokens() {
 }
 
 export async function saveTokens(tokens) {
+  const previous = await loadTokens();
   const payload = {
+    ...previous,
     ...tokens,
     expires_at: Date.now() + Math.max(0, Number(tokens.expires_in || 0) - 60) * 1000,
   };
+  const sql = await database();
+  if (sql) {
+    await sql`
+      INSERT INTO app_oauth_tokens (provider, token_data, updated_at)
+      VALUES (${tokenProvider}, ${JSON.stringify(payload)}::jsonb, NOW())
+      ON CONFLICT (provider)
+      DO UPDATE SET token_data = EXCLUDED.token_data, updated_at = NOW()
+    `;
+    return payload;
+  }
   const temporaryPath = `${tokenPath}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await rename(temporaryPath, tokenPath);

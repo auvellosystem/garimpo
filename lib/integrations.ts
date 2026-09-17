@@ -1,6 +1,6 @@
 export type Offer = {
   id: string;
-  marketplace: "Mercado Livre" | "Shopee";
+  marketplace: "Mercado Livre" | "Shopee" | "Amazon";
   title: string;
   price: number;
   originalPrice?: number;
@@ -11,6 +11,8 @@ export type Offer = {
   rating?: number;
   sold?: number;
 };
+
+let amazonTokenCache: { accessToken: string; expiresAt: number } | undefined;
 
 export type ProviderResult = { offers: Offer[]; status: string };
 export type ReferenceResult = ProviderResult & { query?: string };
@@ -317,6 +319,132 @@ export async function searchShopee(query: string): Promise<ProviderResult> {
   } catch { return { offers: [], status: "não respondeu" }; }
 }
 
+function amazonTokenEndpoint(version: string): string {
+  const configuredUrl = process.env.AMAZON_TOKEN_URL?.trim();
+  if (configuredUrl) return configuredUrl;
+  if (version === "3.2") return "https://api.amazon.co.uk/auth/o2/token";
+  if (version === "3.3") return "https://api.amazon.co.jp/auth/o2/token";
+  return "https://api.amazon.com/auth/o2/token";
+}
+
+type AmazonListing = {
+  merchantInfo?: { name?: unknown };
+  price?: {
+    money?: { amount?: unknown };
+    savingBasis?: { money?: { amount?: unknown } };
+  };
+};
+
+type AmazonItem = {
+  asin?: unknown;
+  detailPageURL?: unknown;
+  images?: { primary?: { large?: { url?: unknown }; medium?: { url?: unknown } } };
+  itemInfo?: { title?: { displayValue?: unknown } };
+  offersV2?: { listings?: AmazonListing[] };
+};
+
+type AmazonSearchPayload = {
+  searchResult?: { items?: AmazonItem[] };
+};
+
+async function amazonAccessToken(clientId: string, clientSecret: string, version: string): Promise<string> {
+  if (amazonTokenCache && amazonTokenCache.expiresAt > Date.now()) return amazonTokenCache.accessToken;
+
+  const response = await fetch(amazonTokenEndpoint(version), {
+    method: "POST",
+    signal: AbortSignal.timeout(12_000),
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: "creatorsapi::default",
+    }),
+  });
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) {
+    const detail = String(payload.error_description || payload.message || payload.error || `HTTP ${response.status}`);
+    throw new Error(`autorização recusada: ${detail}`);
+  }
+
+  const accessToken = typeof payload.access_token === "string" ? payload.access_token.trim() : "";
+  if (!accessToken) throw new Error("autorização não retornou access_token");
+  const expiresIn = Math.max(60, asNumber(payload.expires_in) || 3600);
+  amazonTokenCache = { accessToken, expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1000 };
+  return accessToken;
+}
+
+export async function searchAmazon(query: string): Promise<ProviderResult> {
+  const clientId = process.env.AMAZON_CREATORS_CLIENT_ID?.trim();
+  const clientSecret = process.env.AMAZON_CREATORS_CLIENT_SECRET?.trim();
+  const credentialVersion = process.env.AMAZON_CREATORS_CREDENTIAL_VERSION?.trim() || "3.1";
+  const partnerTag = process.env.AMAZON_PARTNER_TAG?.trim();
+  const marketplace = process.env.AMAZON_MARKETPLACE?.trim() || "www.amazon.com.br";
+  if (!clientId || !clientSecret || !partnerTag) return { offers: [], status: "aguardando credenciais" };
+
+  try {
+    const accessToken = await amazonAccessToken(clientId, clientSecret, credentialVersion);
+    const baseUrl = (process.env.AMAZON_API_URL?.trim() || "https://creatorsapi.amazon/catalog/v1").replace(/\/$/, "");
+    const response = await fetch(`${baseUrl}/searchItems`, {
+      method: "POST",
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json",
+        "x-marketplace": marketplace,
+      },
+      body: JSON.stringify({
+        partnerTag,
+        keywords: query,
+        searchIndex: "All",
+        itemCount: 10,
+        marketplace,
+        languagesOfPreference: ["pt_BR"],
+        currencyOfPreference: "BRL",
+        resources: [
+          "images.primary.large",
+          "images.primary.medium",
+          "itemInfo.title",
+          "itemInfo.byLineInfo",
+          "offersV2.listings.availability",
+          "offersV2.listings.merchantInfo",
+          "offersV2.listings.price",
+        ],
+      }),
+    });
+    const payload = await response.json().catch(() => ({})) as AmazonSearchPayload;
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) return { offers: [], status: `acesso recusado (${response.status})` };
+      return { offers: [], status: `indisponível (${response.status})` };
+    }
+
+    const items: AmazonItem[] = Array.isArray(payload.searchResult?.items) ? payload.searchResult.items : [];
+    const offers = items.map((item): Offer | undefined => {
+      const listings = Array.isArray(item.offersV2?.listings) ? item.offersV2.listings : [];
+      const listing = listings.find((candidate) => asNumber(candidate.price?.money?.amount) > 0);
+      const price = asNumber(listing?.price?.money?.amount);
+      if (!listing || !price) return undefined;
+      const originalPrice = asNumber(listing.price?.savingBasis?.money?.amount) || undefined;
+      return {
+        id: String(item.asin ?? ""),
+        marketplace: "Amazon",
+        title: String(item.itemInfo?.title?.displayValue ?? "Produto Amazon"),
+        price,
+        originalPrice: originalPrice && originalPrice > price ? originalPrice : undefined,
+        image: String(item.images?.primary?.large?.url || item.images?.primary?.medium?.url || ""),
+        url: String(item.detailPageURL ?? ""),
+        seller: listing.merchantInfo?.name ? String(listing.merchantInfo.name) : undefined,
+      };
+    }).filter((offer: Offer | undefined): offer is Offer => Boolean(offer));
+
+    return { offers: pickBest(offers, 10), status: offers.length ? "ok" : "nenhuma oferta com preço" };
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "não respondeu";
+    return { offers: [], status: message.startsWith("autorização") ? message : "não respondeu" };
+  }
+}
+
 export function normalizeBrazilPhone(input: string): string {
   const digits = input.replace(/\D/g, "");
   if (!digits) return "";
@@ -325,7 +453,11 @@ export function normalizeBrazilPhone(input: string): string {
 
 export function buildWhatsAppMessage(query: string, offers: Offer[]): string {
   const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
-  const lines = offers.slice(0, 6).flatMap((offer, index) => [
+  const marketplaces: Offer["marketplace"][] = ["Mercado Livre", "Shopee", "Amazon"];
+  const selected = marketplaces
+    .flatMap((marketplace) => offers.filter((offer) => offer.marketplace === marketplace).slice(0, 3))
+    .sort((a, b) => a.price - b.price);
+  const lines = selected.flatMap((offer, index) => [
     `*${index + 1}. ${offer.title.slice(0, 100)}*`,
     `${offer.marketplace} • ${currency.format(offer.price)}${offer.shipping ? ` • ${offer.shipping}` : ""}`,
     offer.url,
