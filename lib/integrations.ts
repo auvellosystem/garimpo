@@ -159,56 +159,6 @@ function mercadoLivreItemUrl(itemId: string): string {
   return `https://produto.mercadolivre.com.br/${itemId.replace(/^MLB/i, "MLB-")}`;
 }
 
-function extractMercadoLivreReference(reference: string): { itemId?: string; productId?: string } {
-  const value = reference.trim();
-  const productMatch = value.match(/\/p\/(MLB\d+)/i);
-  if (productMatch) return { productId: productMatch[1].toUpperCase() };
-
-  const idMatch = value.match(/\bMLB[-_ ]?(\d{6,})\b/i);
-  if (!idMatch) return {};
-  const normalized = `MLB${idMatch[1]}`;
-  return value.includes("/p/") ? { productId: normalized } : { itemId: normalized };
-}
-
-export async function searchMercadoLivreByReference(reference: string): Promise<ReferenceResult> {
-  const extracted = extractMercadoLivreReference(reference);
-  if (!extracted.itemId && !extracted.productId) {
-    return { offers: [], status: "link ou ID inválido" };
-  }
-
-  try {
-    const token = await mercadoLivreAccessToken();
-    if (!token) return { offers: [], status: "OAuth não autorizado — execute npm run ml:auth" };
-    let productId = extracted.productId;
-    let query = "";
-    let seedOffer: Offer | undefined;
-
-    if (extracted.itemId) {
-      const itemResponse = await mercadoLivreRequest(`/items/${extracted.itemId}`, token);
-      if (!itemResponse.ok) return { offers: [], status: `anúncio indisponível (${itemResponse.status})` };
-      const item = await itemResponse.json() as Record<string, any>;
-      query = String(item.title ?? "").trim();
-      productId = item.catalog_product_id ? String(item.catalog_product_id) : undefined;
-      seedOffer = {
-        id: String(item.id ?? extracted.itemId), marketplace: "Mercado Livre", title: query || "Produto do Mercado Livre",
-        price: asNumber(item.price), originalPrice: asNumber(item.original_price) || undefined,
-        image: String(item.thumbnail ?? "").replace(/^http:/, "https:"),
-        url: String(item.permalink || mercadoLivreItemUrl(extracted.itemId)),
-        shipping: item.shipping?.free_shipping ? "Frete grátis" : undefined,
-        sold: asNumber(item.sold_quantity) || undefined,
-      };
-      if (!productId) return { offers: seedOffer.price > 0 ? [seedOffer] : [], status: "sem produto de catálogo relacionado", query };
-    }
-
-    const result = await resolveMercadoLivreProduct(productId!, token, seedOffer, query);
-    if (!result.offers.length) return result;
-    const affiliated = await applyMercadoLivreAffiliateLinks(result.offers);
-    return { ...result, offers: affiliated.offers, status: result.status === "ok" ? affiliated.status : result.status };
-  } catch {
-    return { offers: [], status: "não respondeu" };
-  }
-}
-
 async function resolveMercadoLivreProduct(
   productId: string,
   token: string,
@@ -470,6 +420,33 @@ export async function sendWhatsApp(phoneInput: string, message: string) {
   const phone = normalizeBrazilPhone(phoneInput);
   if (!phone) return { sent: false, mode: "none" as const };
   const manualUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+
+  const auvelloUrl = process.env.AUVELLO_CLOUD_URL?.trim().replace(/\/$/, "");
+  const auvelloSecret = process.env.AUVELLO_WHATSAPP_SECRET?.trim();
+  if (auvelloUrl && auvelloSecret) {
+    try {
+      const response = await fetch(`${auvelloUrl}/send/direct`, {
+        method: "POST",
+        signal: AbortSignal.timeout(75_000),
+        headers: {
+          "content-type": "application/json",
+          "x-auvello-key": auvelloSecret,
+        },
+        body: JSON.stringify({ phone, message }),
+      });
+      if (response.ok) return { sent: true, mode: "automatic" as const };
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      return {
+        sent: false,
+        mode: "manual" as const,
+        url: manualUrl,
+        detail: payload.error || `Auvello Cloud recusou o envio (${response.status})`,
+      };
+    } catch {
+      return { sent: false, mode: "manual" as const, url: manualUrl, detail: "Auvello Cloud não respondeu" };
+    }
+  }
+
   const token = process.env.WHATSAPP_ACCESS_TOKEN?.trim();
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID?.trim();
   if (!token || !phoneNumberId) return { sent: false, mode: "manual" as const, url: manualUrl, detail: "Envio automático não configurado" };

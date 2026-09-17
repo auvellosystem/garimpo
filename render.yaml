@@ -36,9 +36,7 @@ services:
         sync: false
       - key: ML_AFFILIATE_USER_AGENT
         value: Mozilla/5.0
-      - key: WHATSAPP_ACCESS_TOKEN
+      - key: AUVELLO_CLOUD_URL
+        value: https://auvello-cloud.onrender.com
+      - key: AUVELLO_WHATSAPP_SECRET
         sync: false
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
-      - key: WHATSAPP_GRAPH_VERSION
-        value: v23.0
