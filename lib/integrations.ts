@@ -24,9 +24,10 @@ function asNumber(value: unknown): number {
 
 const SEARCH_CONNECTORS = new Set(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para", "por", "com"]);
 const ACCESSORY_TERMS = [
-  "adaptador", "adesivo", "analogico", "base", "bolsa", "borracha", "cabo", "capa", "case",
-  "carregador", "controle", "fone", "grip", "headset", "jogo", "kit reparo", "pelicula", "protetor",
-  "skin", "suporte", "thumbstick",
+  "adaptador", "adesivo", "analogico", "antipoeira", "base", "bolsa", "borracha", "cabo", "capa", "case",
+  "carregador", "controle", "controller", "cooler", "dock", "faceplate", "fone", "grip", "headset", "jogo",
+  "joystick", "kit reparo", "mesa dock", "organizador", "pelicula", "placa", "protetor", "protetora", "skin",
+  "stand", "suporte", "tampa", "tampas", "thumbstick", "ventilador",
 ];
 
 function normalizeSearchText(value: string): string {
@@ -53,7 +54,7 @@ function queryRequestsAccessory(query: string): boolean {
 function consoleIntent(query: string): { aliases: string[]; variants: string[] } | undefined {
   const normalized = normalizeSearchText(query);
   if (/\b(playstation 5|ps5|ps 5)\b/.test(normalized)) {
-    return { aliases: ["playstation 5", "ps5", "ps 5"], variants: ["console playstation 5", "console ps5", "playstation 5 slim"] };
+    return { aliases: ["playstation 5", "ps5", "ps 5"], variants: ["console sony playstation 5 slim 1tb", "videogame console ps5 slim", "console playstation 5"] };
   }
   if (/\b(playstation 4|ps4|ps 4)\b/.test(normalized)) {
     return { aliases: ["playstation 4", "ps4", "ps 4"], variants: ["console playstation 4", "console ps4"] };
@@ -81,7 +82,7 @@ function matchesSearchIntent(title: string, query: string): boolean {
     if (!modelMatches) return false;
     const hasAccessoryTerm = ACCESSORY_TERMS.some((term) => ` ${normalizedTitle} `.includes(` ${term} `));
     const hasClearConsoleSignal = /\b(console|slim|fat|digital|standard|disc|midia fisica|com leitor|sem leitor|cfi|825gb|825 gb|1tb|1 tb|edicao|bundle|sony|microsoft|nintendo)\b/.test(normalizedTitle);
-    if (hasAccessoryTerm && !/\b(console|slim|fat|digital|standard|midia fisica|com leitor|sem leitor|cfi|825gb|825 gb|1tb|1 tb)\b/.test(normalizedTitle)) return false;
+    if (hasAccessoryTerm) return false;
     return hasClearConsoleSignal;
   }
 
@@ -341,7 +342,7 @@ function shopeeQueryVariants(query: string): string[] {
   const intent = consoleIntent(original);
   const variants = [original];
   if (intent && !queryRequestsAccessory(original)) variants.push(...intent.variants);
-  return [...new Set(variants)].slice(0, 4);
+  return [...new Set(variants)].slice(0, 3);
 }
 
 export async function searchShopee(query: string): Promise<ProviderResult> {
@@ -350,14 +351,17 @@ export async function searchShopee(query: string): Promise<ProviderResult> {
   if (!appId || !secret) return { offers: [], status: "aguardando credenciais" };
 
   const graphQuery = `query ProductOffers($keyword: String!, $page: Int!, $limit: Int!) {
-    productOfferV2(keyword: $keyword, page: $page, limit: $limit, listType: 0, sortType: 2) {
+    productOfferV2(keyword: $keyword, page: $page, limit: $limit, listType: 0, sortType: 1) {
       nodes { itemId productName productLink offerLink imageUrl priceMin priceMax priceDiscountRate sales ratingStar shopName }
       pageInfo { page limit hasNextPage }
     }
   }`;
   try {
-    const responses = await Promise.all(shopeeQueryVariants(query).map(async (variant) => {
-      const body = JSON.stringify({ query: graphQuery, variables: { keyword: variant, page: 1, limit: 20 } });
+    const requests = shopeeQueryVariants(query).flatMap((variant) =>
+      [1, 2, 3].map((page) => ({ variant, page })),
+    );
+    const responses = await Promise.all(requests.map(async ({ variant, page }) => {
+      const body = JSON.stringify({ query: graphQuery, variables: { keyword: variant, page, limit: 20 } });
       const timestamp = Math.floor(Date.now() / 1000);
       const signature = await sha256Hex(`${appId}${timestamp}${body}${secret}`);
       const response = await fetch(process.env.SHOPEE_API_URL || "https://open-api.affiliate.shopee.com.br/graphql", {
