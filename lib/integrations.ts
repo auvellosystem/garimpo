@@ -22,6 +22,95 @@ function asNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const SEARCH_CONNECTORS = new Set(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para", "por", "com"]);
+const ACCESSORY_TERMS = [
+  "adaptador", "adesivo", "analogico", "base", "bolsa", "borracha", "cabo", "capa", "case",
+  "carregador", "controle", "fone", "grip", "headset", "jogo", "kit reparo", "pelicula", "protetor",
+  "skin", "suporte", "thumbstick",
+];
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function meaningfulTerms(value: string): string[] {
+  return normalizeSearchText(value)
+    .split(" ")
+    .filter((term) => term && !SEARCH_CONNECTORS.has(term) && (term.length > 1 || /^\d+$/.test(term)));
+}
+
+function queryRequestsAccessory(query: string): boolean {
+  const normalized = ` ${normalizeSearchText(query)} `;
+  return ACCESSORY_TERMS.some((term) => normalized.includes(` ${term} `));
+}
+
+function consoleIntent(query: string): { aliases: string[]; variants: string[] } | undefined {
+  const normalized = normalizeSearchText(query);
+  if (/\b(playstation 5|ps5|ps 5)\b/.test(normalized)) {
+    return { aliases: ["playstation 5", "ps5", "ps 5"], variants: ["console playstation 5", "console ps5", "playstation 5 slim"] };
+  }
+  if (/\b(playstation 4|ps4|ps 4)\b/.test(normalized)) {
+    return { aliases: ["playstation 4", "ps4", "ps 4"], variants: ["console playstation 4", "console ps4"] };
+  }
+  if (/\b(xbox series x|series x)\b/.test(normalized)) {
+    return { aliases: ["xbox series x", "series x"], variants: ["console xbox series x"] };
+  }
+  if (/\b(xbox series s|series s)\b/.test(normalized)) {
+    return { aliases: ["xbox series s", "series s"], variants: ["console xbox series s"] };
+  }
+  if (/\b(nintendo switch|switch oled)\b/.test(normalized)) {
+    return { aliases: ["nintendo switch", "switch oled"], variants: ["console nintendo switch", "nintendo switch oled"] };
+  }
+  return undefined;
+}
+
+function matchesSearchIntent(title: string, query: string): boolean {
+  const normalizedTitle = normalizeSearchText(title);
+  if (!normalizedTitle) return false;
+  const intent = consoleIntent(query);
+  const accessoryRequested = queryRequestsAccessory(query);
+
+  if (intent && !accessoryRequested) {
+    const modelMatches = intent.aliases.some((alias) => normalizedTitle.includes(alias));
+    if (!modelMatches) return false;
+    const hasAccessoryTerm = ACCESSORY_TERMS.some((term) => ` ${normalizedTitle} `.includes(` ${term} `));
+    const hasClearConsoleSignal = /\b(console|slim|fat|digital|standard|disc|midia fisica|com leitor|sem leitor|cfi|825gb|825 gb|1tb|1 tb|edicao|bundle|sony|microsoft|nintendo)\b/.test(normalizedTitle);
+    if (hasAccessoryTerm && !/\b(console|slim|fat|digital|standard|midia fisica|com leitor|sem leitor|cfi|825gb|825 gb|1tb|1 tb)\b/.test(normalizedTitle)) return false;
+    return hasClearConsoleSignal;
+  }
+
+  const terms = meaningfulTerms(query);
+  if (!terms.length) return false;
+  const matched = terms.filter((term) => normalizedTitle.includes(term)).length;
+  if (matched / terms.length < .7) return false;
+
+  if (!accessoryRequested) {
+    const hasAccessoryTerm = ACCESSORY_TERMS.some((term) => ` ${normalizedTitle} `.includes(` ${term} `));
+    const hasProductSignal = /\b(console|celular|smartphone|notebook|televisao|tv|monitor|camera|impressora|geladeira|fogao|lavadora)\b/.test(normalizedTitle);
+    if (hasAccessoryTerm && !hasProductSignal) return false;
+  }
+  return true;
+}
+
+function searchRelevanceScore(title: string, query: string): number {
+  if (!matchesSearchIntent(title, query)) return -1;
+  const normalizedTitle = normalizeSearchText(title);
+  const normalizedQuery = normalizeSearchText(query);
+  const terms = meaningfulTerms(query);
+  const matched = terms.filter((term) => normalizedTitle.includes(term)).length;
+  return (normalizedTitle.includes(normalizedQuery) ? 10 : 0) + matched * 2 + (consoleIntent(query) ? 5 : 0);
+}
+
+function relevantOffers(offers: Offer[], query: string): Offer[] {
+  return offers.filter((offer) => matchesSearchIntent(offer.title, query));
+}
+
 function pickBest(offers: Offer[], limit = 5): Offer[] {
   return offers
     .filter((offer) => offer.price > 0 && offer.url && offer.title)
@@ -48,6 +137,8 @@ function mercadoLivreQueryVariants(query: string): string[] {
     const vehicle = normalized.match(vehicleHint)?.[0] || "";
     variants.push(`tapete automotivo ${vehicle}`, `jogo tapetes ${vehicle}`);
   }
+  const intent = consoleIntent(original);
+  if (intent && !queryRequestsAccessory(original)) variants.push(...intent.variants);
   return [...new Set(variants.map((value) => value.trim()).filter((value) => value.length >= 2))].slice(0, 4);
 }
 
@@ -104,7 +195,7 @@ export async function searchMercadoLivre(query: string): Promise<ProviderResult>
       endpoint.searchParams.set("site_id", "MLB");
       endpoint.searchParams.set("status", "active");
       endpoint.searchParams.set("q", variant);
-      endpoint.searchParams.set("limit", "5");
+      endpoint.searchParams.set("limit", "10");
       const response = await fetch(endpoint, { headers: mercadoLivreHeaders(token), signal: AbortSignal.timeout(12_000) });
       if (!response.ok) return { ok: false as const, status: response.status, results: [] as Array<Record<string, any>> };
       const payload = await response.json() as { results?: Array<Record<string, any>> };
@@ -114,16 +205,28 @@ export async function searchMercadoLivre(query: string): Promise<ProviderResult>
       return { offers: [], status: `pesquisa indisponível (${responses[0]?.status || 500})` };
     }
 
-    const productIds = [...new Set(responses.flatMap((response) => response.results)
-      .map((product) => String(product.id ?? "").trim())
-      .filter((id) => /^MLB\d+$/i.test(id))
-    )].slice(0, 12);
+    const seenProductIds = new Set<string>();
+    const productIds = responses
+      .flatMap((response) => response.results)
+      .map((product) => ({
+        id: String(product.id ?? "").trim(),
+        score: searchRelevanceScore(String(product.name || product.title || query), query),
+      }))
+      .filter((product) => /^MLB\d+$/i.test(product.id) && product.score >= 0)
+      .sort((a, b) => b.score - a.score)
+      .filter((product) => {
+        if (seenProductIds.has(product.id)) return false;
+        seenProductIds.add(product.id);
+        return true;
+      })
+      .map((product) => product.id)
+      .slice(0, 18);
     if (!productIds.length) return { offers: [], status: "nenhum produto de catálogo encontrado" };
 
     const resolved = await Promise.all(productIds.map((productId) =>
       resolveMercadoLivreProduct(productId, token, undefined, query),
     ));
-    const offers = pickBest(resolved.flatMap((result) => result.offers), 10);
+    const offers = pickBest(relevantOffers(resolved.flatMap((result) => result.offers), query), 10);
     if (!offers.length) return { offers: [], status: "nenhum anúncio ativo" };
     return applyMercadoLivreAffiliateLinks(offers);
   } catch { return { offers: [], status: "não respondeu" }; }
@@ -233,6 +336,14 @@ async function sha256Hex(content: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function shopeeQueryVariants(query: string): string[] {
+  const original = query.replace(/\s+/g, " ").trim();
+  const intent = consoleIntent(original);
+  const variants = [original];
+  if (intent && !queryRequestsAccessory(original)) variants.push(...intent.variants);
+  return [...new Set(variants)].slice(0, 4);
+}
+
 export async function searchShopee(query: string): Promise<ProviderResult> {
   const appId = process.env.SHOPEE_APP_ID?.trim();
   const secret = process.env.SHOPEE_SECRET?.trim();
@@ -244,20 +355,33 @@ export async function searchShopee(query: string): Promise<ProviderResult> {
       pageInfo { page limit hasNextPage }
     }
   }`;
-  const body = JSON.stringify({ query: graphQuery, variables: { keyword: query, page: 1, limit: 20 } });
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = await sha256Hex(`${appId}${timestamp}${body}${secret}`);
-
   try {
-    const response = await fetch(process.env.SHOPEE_API_URL || "https://open-api.affiliate.shopee.com.br/graphql", {
-      method: "POST", signal: AbortSignal.timeout(12_000),
-      headers: { "content-type": "application/json", authorization: `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}` },
-      body,
-    });
-    if (!response.ok) return { offers: [], status: `indisponível (${response.status})` };
-    const payload = await response.json() as { data?: { productOfferV2?: { nodes?: Array<Record<string, any>> } }; errors?: Array<{ message?: string }> };
-    if (payload.errors?.length) return { offers: [], status: "credenciais ou consulta rejeitada" };
-    const nodes = payload.data?.productOfferV2?.nodes ?? [];
+    const responses = await Promise.all(shopeeQueryVariants(query).map(async (variant) => {
+      const body = JSON.stringify({ query: graphQuery, variables: { keyword: variant, page: 1, limit: 20 } });
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signature = await sha256Hex(`${appId}${timestamp}${body}${secret}`);
+      const response = await fetch(process.env.SHOPEE_API_URL || "https://open-api.affiliate.shopee.com.br/graphql", {
+        method: "POST", signal: AbortSignal.timeout(12_000),
+        headers: { "content-type": "application/json", authorization: `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}` },
+        body,
+      });
+      if (!response.ok) return { ok: false as const, status: response.status, nodes: [] as Array<Record<string, any>> };
+      const payload = await response.json() as { data?: { productOfferV2?: { nodes?: Array<Record<string, any>> } }; errors?: Array<{ message?: string }> };
+      if (payload.errors?.length) return { ok: false as const, status: 400, nodes: [] as Array<Record<string, any>> };
+      return { ok: true as const, status: response.status, nodes: payload.data?.productOfferV2?.nodes ?? [] };
+    }));
+    if (responses.every((response) => !response.ok)) {
+      return { offers: [], status: `indisponível (${responses[0]?.status || 500})` };
+    }
+    const seenItemIds = new Set<string>();
+    const nodes = responses
+      .flatMap((response) => response.nodes)
+      .filter((item) => {
+        const id = String(item.itemId ?? "");
+        if (!id || seenItemIds.has(id)) return false;
+        seenItemIds.add(id);
+        return true;
+      });
     const offers = nodes.map((item): Offer => {
       const price = asNumber(item.priceMin);
       const discount = Math.max(0, Math.min(95, asNumber(item.priceDiscountRate)));
@@ -269,7 +393,11 @@ export async function searchShopee(query: string): Promise<ProviderResult> {
         sold: asNumber(item.sales) || undefined,
       };
     });
-    return { offers: pickBest(offers, 10), status: "ok" };
+    const relevant = relevantOffers(offers, query);
+    return {
+      offers: pickBest(relevant, 10),
+      status: relevant.length ? "ok" : "nenhum produto principal encontrado",
+    };
   } catch { return { offers: [], status: "não respondeu" }; }
 }
 
